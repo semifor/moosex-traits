@@ -1,5 +1,7 @@
 package MooseX::Traits;
 use Moose::Role;
+use Moose::Util ();
+use Scalar::Util ();
 
 our $VERSION   = '0.03';
 our $AUTHORITY = 'id:JROCKWAY';
@@ -10,7 +12,27 @@ has '_trait_namespace' => (
     isa      => 'Str',
 );
 
+# shamelessly stolen from MX::Object::Pluggable
+has _original_class_name => (
+  is => 'ro',
+  required => 1,
+  isa => 'Str',
+  default => sub{ Scalar::Util::blessed($_[0]) },
+);
+
 # dont pollute the consuming class with methods they don't want
+my $find_trait = sub {
+    my ($class, $base, $name) = @_;
+
+    my @search_ns = grep !/^(?:Moose|Class::MOP)::/,
+        $class->meta->class_precedence_list;
+
+    for my $ns (@search_ns) {
+        my $full = "${ns}::${base}::${name}";
+        return $full if eval { Class::MOP::load_class($full) };
+    }
+};
+
 my $transform_trait = sub {
     my ($class, $name) = @_;
     my $namespace = $class->meta->get_attribute('_trait_namespace');
@@ -24,16 +46,24 @@ my $transform_trait = sub {
 
     return $name unless $base;
     return $1 if $name =~ /^[+](.+)$/;
+    return $class->$find_trait($1, $name) if $base =~ /^\+(.*)/;
     return join '::', $base, $name;
+};
+
+my $resolve_traits = sub {
+    my $class = shift;
+    Class::MOP::load_class($_)
+        for map { $_ = $class->$transform_trait($_) } @_;
 };
 
 sub new_with_traits {
     my ($class, %args) = @_;
 
+    my $original_class = $class;
+
     if (my $traits = delete $args{traits}) {
         if(@$traits){
-            Class::MOP::load_class($_)
-                for map { $_ = $class->$transform_trait($_) } @$traits;
+            $class->$resolve_traits(@$traits);
 
             my $meta = $class->meta->create_anon_class(
                 superclasses => [ blessed($class) || $class ],
@@ -46,8 +76,20 @@ sub new_with_traits {
         }
     }
 
-    return $class->new(%args);
+    return $class->new(%args, _original_class_name => $original_class);
 }
+
+sub apply_traits {
+    my ($self, @traits) = @_;
+
+    if (@traits) {
+        $self->$resolve_traits(@traits);
+
+        Moose::Util::apply_all_roles($self, @traits);
+    }
+}
+
+no Moose::Role;
 
 1;
 
@@ -81,6 +123,10 @@ Then use your customized class:
   $class->does('Role'); # true
   $class->foo; # 42
 
+To apply traits to an existing instance:
+
+  $self->apply_traits(qw/Role1 Role2/);
+
 =head1 DESCRIPTION
 
 Often you want to create components that can be added to a class
@@ -93,11 +139,17 @@ in one go, cache the resulting class (for efficiency), and return a
 new instance.  Arguments meant to initialize the applied roles'
 attributes can also be passed to the constructor.
 
+Alternatively, traits can be applied to an instance with C<apply_traits>,
+arguments for initializing attributes in consumed roles can be in C<%$self>
+(useful for e.g. L<Catalyst> components.)
+
 =head1 METHODS
 
 =over 4
 
-=item B<new_with_traits (%args, traits => \@traits)>
+=item B<< $class->new_with_traits(%args, traits => \@traits) >>
+
+=item B<< $instance->apply_traits(@traits) >>
 
 =back
 
@@ -139,11 +191,58 @@ Example:
   $instance2->does('Trait')          # true
   $instance2->does('Another::Trait') # false
 
+If the value of L</_trait_namespace> starts with a C<+> the namespace will be
+considered relative to the C<class_precedence_list> of the original class.
+
+Example:
+
+  package Class1
+  use Moose;
+
+  package Class1::Trait::Foo;
+  use Moose::Role;
+  has 'bar' => (
+      is       => 'ro',
+      isa      => 'Str',
+      required => 1,
+  );
+
+  package Class2;
+  use parent 'Class1';
+  with 'MooseX::Traits';
+  has '+_trait_namespace' => (default => '+Trait');
+
+  package Class2::Trait::Bar;
+  use Moose::Role;
+  has 'baz' => (
+      is       => 'ro',
+      isa      => 'Str',
+      required => 1,
+  );
+
+  package main;
+  my $instance = Class2->new_with_traits(
+      traits => ['Foo', 'Bar'],
+      bar => 'baz',
+      baz => 'quux',
+  );
+
+  $instance->does('Class1::Trait::Foo'); # true
+  $instance->does('Class2::Trait::Bar'); # true
+
+=head2 _original_class_name
+
+When traits are applied to your class or instance, you get an anonymous class
+back whose name will be not the same as your original class. So C<ref $self>
+will not be C<Class>, but C<< $self->_original_class_name >> will be.
+
 =head1 AUTHOR
 
 Jonathan Rockway C<< <jrockway@cpan.org> >>
 
 Stevan Little C<< <stevan.little@iinteractive.com> >>
+
+Rafael Kitover C<< <rkitover@cpan.org> >>
 
 =head1 COPYRIGHT AND LICENSE
 
