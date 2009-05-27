@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests => 26*2;
+use Test::More tests => 28*2;
 use Test::Exception;
 
 { package Trait;
@@ -124,6 +124,8 @@ for my $new_with_traits (@method) {
     );
     isa_ok $instance, 'NS2';
     isa_ok $instance, 'NS1';
+    ok $instance->meta->does_role('NS1::Trait::Foo');
+    ok $instance->meta->does_role('NS2::Trait::Bar');
     can_ok $instance, 'foo';
     can_ok $instance, 'bar';
     can_ok $instance, 'baz';

@@ -76,7 +76,9 @@ sub new_with_traits {
         }
     }
 
-    return $class->new(%args, _original_class_name => $original_class);
+    my $constructor = $class->meta->constructor_name || 'new';
+
+    return $class->$constructor(%args, _original_class_name => $original_class);
 }
 
 sub apply_traits {
